@@ -1,0 +1,129 @@
+services:
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        VITE_APP_BASE_API: ${VITE_APP_BASE_API:-/api}
+        VITE_APP_API_URL: ${VITE_APP_API_URL:-http://server:8080}
+        VITE_RAG_API: ${VITE_RAG_API:-/api/rag}
+    container_name: hsi-web
+    depends_on:
+      - server
+      - rag
+    ports:
+      - "${WEB_PORT:-80}:80"
+    restart: unless-stopped
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: hsi-server
+    depends_on:
+      mysql:
+        condition: service_healthy
+      model:
+        condition: service_started
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-hsi_detection_system}?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&serverTimezone=Asia/Shanghai&allowMultiQueries=true
+      SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-root}
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD:-root123456}
+      PREDICT_URL: http://model:5000
+      FILE_PROFILE: /app/data/upload
+      FILE_OUTPUT: /app/data/upload/output
+    volumes:
+      - upload-data:/app/data/upload
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    restart: unless-stopped
+
+  model:
+    build:
+      context: ./model
+      dockerfile: Dockerfile
+    container_name: hsi-model
+    environment:
+      MODEL_HOST: 0.0.0.0
+      MODEL_PORT: 5000
+      MODEL_PATH: /app/static/DMSSN_double_epoch_100.pth
+      OUTPUT_DIR: /app/data/upload/output
+    volumes:
+      - upload-data:/app/data/upload
+    ports:
+      - "${MODEL_PORT:-5000}:5000"
+    restart: unless-stopped
+
+  rag:
+    build:
+      context: ./rag
+      dockerfile: Dockerfile
+    container_name: hsi-rag
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      RAG_HOST: 0.0.0.0
+      RAG_PORT: 5001
+      RAG_DEBUG: "false"
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen3-embedding:0.6b}
+      LLM_MODEL: ${LLM_MODEL:-qwen3:8b}
+      CHUNK_SIZE: ${CHUNK_SIZE:-500}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-50}
+      USE_REDIS: ${USE_REDIS:-true}
+      REDIS_URL: redis://redis:6379/0
+      MAX_HISTORY_MESSAGES: ${MAX_HISTORY_MESSAGES:-20}
+      SESSION_ID: ${SESSION_ID:-default_session}
+    volumes:
+      - ./rag/chroma_db:/app/chroma_db
+      - ./rag/docs:/app/docs
+      - ./rag/papers:/app/papers
+      - ./picData:/app/picData
+    ports:
+      - "${RAG_PORT:-5001}:5001"
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.4
+    container_name: hsi-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-root123456}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-hsi_detection_system}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d
+      - ./_localhost-2026_03_25_09_36_12-dump.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: hsi-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  upload-data:
+  mysql-data:
+  redis-data:

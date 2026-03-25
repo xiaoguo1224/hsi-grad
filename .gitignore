@@ -47,6 +47,9 @@ yarn-error.log*
 .env
 .env.local
 .env.*.local
+.env.docker
+.env.docker.*
+!.env.docker.example
 
 # Logs
 logs/
@@ -55,6 +58,15 @@ logs/
 # Database
 *.db
 *.sqlite
+*_dump.sql
+*_dump*.sql
+*-dump.sql
+*-dump*.sql
 
 # RAG data
 rag/data/
+
+# Local data and exports
+picData/
+docker/mysql/init/*.sql
+!docker/mysql/init/.gitkeep

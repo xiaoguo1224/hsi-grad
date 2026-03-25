@@ -1,0 +1,38 @@
+spring:
+  servlet:
+    multipart:
+      enabled: true
+      # 单个文件的最大限制
+      max-file-size: 1000MB
+      # 单个请求的总限制（包含所有上传文件）
+      max-request-size: 1000MB
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://mysql:3306/hsi_detection_system?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&serverTimezone=Asia/Shanghai&allowMultiQueries=true}
+    username: ${SPRING_DATASOURCE_USERNAME:root}
+    password: ${SPRING_DATASOURCE_PASSWORD:root123456}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+predict:
+  url: ${PREDICT_URL:http://model:5000}
+
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*Mapper.xml
+  type-aliases-package: com.ruoyi.**.domain
+  global-config:
+    db-config:
+      id-type: auto
+  configuration:
+    map-underscore-to-camel-case: true
+    cache-enabled: false
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+
+# 项目相关配置
+file:
+  # 文件路径 示例（ Windows配置D:/ruoyi/uploadPath，Linux配置 /home/ruoyi/uploadPath）
+  profile: ${FILE_PROFILE:/app/data/upload}
+  output: ${FILE_OUTPUT:/app/data/output}
+  # 获取ip地址开关
+  addressEnabled: ${FILE_ADDRESS_ENABLED:false}
+  # 验证码类型 math 数字计算 char 字符验证
+  captchaType: ${FILE_CAPTCHA_TYPE:math}

@@ -1,0 +1,1 @@
+# Web Module`n`n前端 Web 界面模块`n`n## 技术栈`n`n- Vue.js`n- Vite`n- Pinia`n`n## 功能`n`n- 用户界面`n- RAG 聊天界面`n- 可视化展示`n`n## 相关分支`n`n- [master](../tree/master)`n- [branch-model](../tree/branch-model)`n- [branch-rag](../tree/branch-rag)`n- [branch-server](../tree/branch-server)

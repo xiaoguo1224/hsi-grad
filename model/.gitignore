@@ -1,0 +1,8 @@
+/data/
+/outputs/
+/static/
+/__pycache__/
+/assistant/__pycache__/
+/models/__pycache__/
+/modules/__pycache__/
+/.idea/

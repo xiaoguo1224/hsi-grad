@@ -1,0 +1,7 @@
+/__pycache__/
+/rag/__pycache__/
+/.idea/
+/.env
+/chroma_db/
+/papers/*.pdf
+!/papers/papers_info.json
