@@ -4,6 +4,10 @@ RAG 系统 API 路由 - 基于 RAGSystem 单例实现（按需初始化）
 import os
 import json
 import logging
+import shutil
+import threading
+import uuid
+from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify, Response, stream_with_context
 from typing import Generator, Optional
 
@@ -18,6 +22,9 @@ rag_bp = Blueprint('rag', __name__, url_prefix='/api/rag')
 # 全局 RAG 单例
 _rag_instance: Optional[RAGSystem] = None
 _rag_initializing = False
+_document_tasks = {}
+_latest_document_task_id: Optional[str] = None
+_document_task_lock = threading.Lock()
 
 
 def get_rag() -> RAGSystem:
@@ -66,6 +73,94 @@ def get_rag() -> RAGSystem:
         _rag_initializing = False
 
 get_rag()
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _serialize_document_task(task: dict) -> dict:
+    return {
+        "task_id": task["task_id"],
+        "task_type": task["task_type"],
+        "status": task["status"],
+        "message": task["message"],
+        "document_count": task.get("document_count"),
+        "created_at": task["created_at"],
+        "started_at": task.get("started_at"),
+        "finished_at": task.get("finished_at"),
+        "error": task.get("error"),
+    }
+
+
+def _find_running_document_task() -> Optional[dict]:
+    for task in _document_tasks.values():
+        if task["status"] in {"pending", "running"}:
+            return task
+    return None
+
+
+def _run_document_task(task_id: str):
+    global _rag_instance
+
+    task = _document_tasks[task_id]
+    task["status"] = "running"
+    task["started_at"] = _utc_now()
+
+    try:
+        if task["task_type"] == "rebuild":
+            task["message"] = "正在删除旧向量库并重新初始化..."
+            if os.path.exists(Config.DB_DIR):
+                shutil.rmtree(Config.DB_DIR)
+                logger.info(f"已删除旧向量存储：{Config.DB_DIR}")
+            _rag_instance = None
+
+        task["message"] = "正在处理文档并构建向量索引..."
+        rag = get_rag()
+        documents = rag.process_documents()
+
+        task["status"] = "completed"
+        task["document_count"] = len(documents)
+        task["message"] = f"成功处理 {len(documents)} 个文档"
+        task["finished_at"] = _utc_now()
+    except Exception as e:
+        logger.exception("文档后台任务执行失败")
+        task["status"] = "failed"
+        task["error"] = str(e)
+        task["message"] = "文档任务执行失败"
+        task["finished_at"] = _utc_now()
+
+
+def _create_document_task(task_type: str) -> dict:
+    global _latest_document_task_id
+
+    with _document_task_lock:
+        running_task = _find_running_document_task()
+        if running_task:
+            return running_task
+
+        task_id = uuid.uuid4().hex
+        task = {
+            "task_id": task_id,
+            "task_type": task_type,
+            "status": "pending",
+            "message": "任务已提交，等待后台执行...",
+            "document_count": None,
+            "error": None,
+            "created_at": _utc_now(),
+            "started_at": None,
+            "finished_at": None,
+        }
+        _document_tasks[task_id] = task
+        _latest_document_task_id = task_id
+
+        worker = threading.Thread(
+            target=_run_document_task,
+            args=(task_id,),
+            daemon=True
+        )
+        worker.start()
+        return task
 
 # ==================== 核心查询接口 ====================
 
@@ -229,19 +324,14 @@ def process_documents():
     - 如需强制重新处理，请先调用 /documents/rebuild
     """
     try:
-        # 获取 RAG 实例
-        rag = get_rag()
-        
-        # 处理文档
-        documents = rag.process_documents()
-        
+        task = _create_document_task("process")
         return jsonify({
-            "code": 200,
-            "message": f"成功处理 {len(documents)} 个文档",
+            "code": 202,
+            "message": "文档任务已提交，请轮询任务状态",
             "data": {
-                "document_count": len(documents)
+                "task": _serialize_document_task(task)
             }
-        })
+        }), 202
         
     except Exception as e:
         logger.error(f"处理文档错误：{e}")
@@ -270,34 +360,54 @@ def rebuild_documents():
     - 耗时较长，请谨慎使用
     """
     try:
-        global _rag_instance
-        
-        # 删除旧的向量存储
-        if os.path.exists(Config.DB_DIR):
-            import shutil
-            shutil.rmtree(Config.DB_DIR)
-            logger.info(f"已删除旧向量存储：{Config.DB_DIR}")
-        
-        # 重置 RAG 实例
-        _rag_instance = None
-        
-        # 重新初始化
-        rag = get_rag()
-        
-        # 强制处理文档
-        documents = rag.process_documents()
-        
+        task = _create_document_task("rebuild")
         return jsonify({
-            "code": 200,
-            "message": "成功重建向量存储",
+            "code": 202,
+            "message": "重建任务已提交，请轮询任务状态",
             "data": {
-                "document_count": len(documents)
+                "task": _serialize_document_task(task)
             }
-        })
+        }), 202
         
     except Exception as e:
         logger.error(f"重建文档索引错误：{e}")
         return jsonify({"code": 500, "error": str(e)}), 500
+
+
+@rag_bp.route('/documents/tasks/latest', methods=['GET'])
+def latest_document_task():
+    """获取最近一次文档任务状态"""
+    if not _latest_document_task_id or _latest_document_task_id not in _document_tasks:
+        return jsonify({
+            "code": 404,
+            "error": "暂无文档任务"
+        }), 404
+
+    task = _document_tasks[_latest_document_task_id]
+    return jsonify({
+        "code": 200,
+        "data": {
+            "task": _serialize_document_task(task)
+        }
+    })
+
+
+@rag_bp.route('/documents/tasks/<task_id>', methods=['GET'])
+def document_task_status(task_id: str):
+    """获取指定文档任务状态"""
+    task = _document_tasks.get(task_id)
+    if not task:
+        return jsonify({
+            "code": 404,
+            "error": "任务不存在"
+        }), 404
+
+    return jsonify({
+        "code": 200,
+        "data": {
+            "task": _serialize_document_task(task)
+        }
+    })
 
 
 # ==================== 记忆管理接口 ====================

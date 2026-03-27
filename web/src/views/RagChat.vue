@@ -55,6 +55,11 @@
         <el-button type="danger" plain icon="Delete" @click="clearMemory">
           清空对话记忆
         </el-button>
+        <div v-if="documentTask" class="task-status-card">
+          <div class="task-status-title">后台任务</div>
+          <div class="task-status-text">{{ documentTaskLabel }}</div>
+          <div class="task-status-meta">{{ documentTask.message }}</div>
+        </div>
       </div>
     </div>
 
@@ -167,7 +172,7 @@
 </template>
 
 <script setup>
-import {ref, onMounted, nextTick} from 'vue'
+import {computed, ref, onMounted, onBeforeUnmount, nextTick} from 'vue'
 import {ElMessage, ElMessageBox} from 'element-plus'
 import {
   Cpu, Monitor, User, Platform, Document, Position,
@@ -203,6 +208,8 @@ const isProcessing = ref(false)
 const isRebuilding = ref(false)
 const isHistoryLoading = ref(true) // 新增：记录是否正在加载历史记录
 const messageListRef = ref(null)
+const documentTask = ref(null)
+let documentTaskPollTimer = null
 
 const status = ref({
   initialized: false,
@@ -216,6 +223,22 @@ const settings = ref({
   k: 5,
   use_history: true
 })
+
+const getDocumentTaskLabel = (task) => {
+  if (!task) return ''
+
+  const actionText = task.task_type === 'rebuild' ? '重建索引' : '处理文档'
+  const statusMap = {
+    pending: '等待中',
+    running: '执行中',
+    completed: '已完成',
+    failed: '失败'
+  }
+
+  return `${actionText} · ${statusMap[task.status] || task.status}`
+}
+
+const documentTaskLabel = computed(() => getDocumentTaskLabel(documentTask.value))
 
 // 默认的欢迎消息
 const defaultWelcomeMessage = {
@@ -392,6 +415,70 @@ const fetchStatus = async () => {
   }
 }
 
+const syncDocumentTaskLoading = () => {
+  isProcessing.value = documentTask.value?.task_type === 'process' &&
+      ['pending', 'running'].includes(documentTask.value?.status)
+  isRebuilding.value = documentTask.value?.task_type === 'rebuild' &&
+      ['pending', 'running'].includes(documentTask.value?.status)
+}
+
+const stopDocumentTaskPolling = () => {
+  if (documentTaskPollTimer) {
+    clearInterval(documentTaskPollTimer)
+    documentTaskPollTimer = null
+  }
+}
+
+const handleDocumentTaskUpdate = (task) => {
+  documentTask.value = task
+  syncDocumentTaskLoading()
+
+  if (!task) return
+
+  if (task.status === 'completed') {
+    stopDocumentTaskPolling()
+    ElMessage.success(task.message || '后台任务执行成功')
+    fetchStatus()
+  } else if (task.status === 'failed') {
+    stopDocumentTaskPolling()
+    ElMessage.error(task.error || task.message || '后台任务执行失败')
+  }
+}
+
+const pollDocumentTask = (taskId) => {
+  stopDocumentTaskPolling()
+  documentTaskPollTimer = setInterval(async () => {
+    try {
+      const res = await fetch(`${BASE_URL}/documents/tasks/${taskId}`)
+      if (!res.ok) return
+      const {code, data} = await res.json()
+      if (code === 200 && data?.task) {
+        handleDocumentTaskUpdate(data.task)
+      }
+    } catch (error) {
+      console.warn('轮询文档任务状态失败', error)
+    }
+  }, 3000)
+}
+
+const fetchLatestDocumentTask = async () => {
+  try {
+    const res = await fetch(`${BASE_URL}/documents/tasks/latest`)
+    if (!res.ok) return
+
+    const {code, data} = await res.json()
+    if (code === 200 && data?.task) {
+      documentTask.value = data.task
+      syncDocumentTaskLoading()
+      if (['pending', 'running'].includes(data.task.status)) {
+        pollDocumentTask(data.task.task_id)
+      }
+    }
+  } catch (error) {
+    console.warn('获取最近文档任务失败', error)
+  }
+}
+
 const sendMessage = async () => {
   if (!inputMsg.value.trim() || isGenerating.value) return
 
@@ -485,20 +572,18 @@ const sendMessage = async () => {
 }
 
 const processDocs = async () => {
-  isProcessing.value = true
   try {
     const res = await fetch(`${BASE_URL}/documents/process`, {method: 'POST'})
     const {code, data, message} = await res.json()
-    if (code === 200) {
-      ElMessage.success(message || '文档处理成功')
-      fetchStatus()
+    if (code === 202 && data?.task) {
+      handleDocumentTaskUpdate(data.task)
+      pollDocumentTask(data.task.task_id)
+      ElMessage.success(message || '文档任务已提交')
     } else {
       ElMessage.warning(message || '处理遇到问题')
     }
   } catch (error) {
     ElMessage.error('服务异常')
-  } finally {
-    isProcessing.value = false
   }
 }
 
@@ -510,17 +595,15 @@ const rebuildDocs = async () => {
       confirmButtonClass: 'el-button--danger'
     })
 
-    isRebuilding.value = true
     const res = await fetch(`${BASE_URL}/documents/rebuild`, {method: 'POST'})
-    const {code, message} = await res.json()
-    if (code === 200) {
-      ElMessage.success(message || '索引重建成功')
-      fetchStatus()
+    const {code, data, message} = await res.json()
+    if (code === 202 && data?.task) {
+      handleDocumentTaskUpdate(data.task)
+      pollDocumentTask(data.task.task_id)
+      ElMessage.success(message || '重建任务已提交')
     }
   } catch (error) {
     if (error !== 'cancel') ElMessage.error('重建失败')
-  } finally {
-    isRebuilding.value = false
   }
 }
 
@@ -539,7 +622,12 @@ const clearMemory = async () => {
 
 onMounted(() => {
   fetchStatus()
+  fetchLatestDocumentTask()
   loadHistory() // 调用加载历史的逻辑
+})
+
+onBeforeUnmount(() => {
+  stopDocumentTaskPolling()
 })
 </script>
 
@@ -691,6 +779,35 @@ onMounted(() => {
   border-radius: 8px;
   justify-content: flex-start;
   padding-left: 20px;
+}
+
+.task-status-card {
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: #4b5563;
+}
+
+.task-status-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #8c92a4;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.task-status-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.task-status-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #6b7280;
 }
 
 /* ---------------- 主聊天区 ---------------- */
