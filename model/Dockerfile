@@ -5,21 +5,20 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# 配置apt国内源（清华源）
-RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources \
-    && sed -i 's/security.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources
-
-RUN apt-get update \
+# 安装系统依赖（不常变化的层）
+RUN apt-get update --allow-releaseinfo-change \
     && apt-get install -y --no-install-recommends build-essential libglib2.0-0 libsm6 libxext6 libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
-# 配置pip国内源（清华源）
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-    && pip config set install.trusted-host pypi.tuna.tsinghua.edu.cn
-
+# 先只复制 requirements.txt（这层会被缓存）
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
 
+# 配置pip源并安装依赖（这层只要requirements.txt不变就不会重新构建）
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+    && pip config set install.trusted-host pypi.tuna.tsinghua.edu.cn \
+    && pip install --no-cache-dir -r requirements.txt
+
+# 最后复制应用代码（代码变化时只重新构建这层）
 COPY . .
 
 EXPOSE 5000

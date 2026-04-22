@@ -12,7 +12,7 @@ export function getList(data) {
     return request({
         url: '/detection/getList',
         method: 'get',
-        data: data
+        params: data
     })
 }
 

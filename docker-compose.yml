@@ -34,8 +34,8 @@ services:
       FILE_OUTPUT: /app/data/upload/output
     volumes:
       - upload-data:/app/data/upload
-    ports:
-      - "${SERVER_PORT:-8080}:8080"
+    expose:
+      - "8080"
     restart: unless-stopped
 
   model:
@@ -50,8 +50,8 @@ services:
       OUTPUT_DIR: /app/data/upload/output
     volumes:
       - upload-data:/app/data/upload
-    ports:
-      - "${MODEL_PORT:-5000}:5000"
+    expose:
+      - "5000"
     restart: unless-stopped
 
   rag:
@@ -80,8 +80,8 @@ services:
       - ./rag/docs:/app/docs
       - ./rag/papers:/app/papers
       - ./picData:/app/picData
-    ports:
-      - "${RAG_PORT:-5001}:5001"
+    expose:
+      - "5001"
     restart: unless-stopped
 
   mysql:
@@ -90,6 +90,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-root123456}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-hsi_detection_system}
+    
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
@@ -97,8 +98,8 @@ services:
       - mysql-data:/var/lib/mysql
       - ./docker/mysql/init:/docker-entrypoint-initdb.d
       - ./_localhost-2026_03_25_09_36_12-dump.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
-    expose:
-      - "3306"
+    ports:
+      - 3308:3306
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD"]
       interval: 10s
@@ -113,8 +114,8 @@ services:
     command: redis-server --appendonly yes
     volumes:
       - redis-data:/data
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
+    expose:
+      - "6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
