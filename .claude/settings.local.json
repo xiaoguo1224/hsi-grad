@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__GitKraken__git_log_or_diff"
+    ]
+  }
+}

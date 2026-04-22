@@ -19,14 +19,14 @@
           </template>
 
           <el-table
-              :data="libData"
+              :data="filteredData"
               stripe
               height="calc(100vh - 240px)"
               highlight-current-row
               @row-click="handleRowClick"
               style="width: 100%; cursor: pointer;"
           >
-            <el-table-column prop="id" label="ID" width="70"/>
+            <el-table-column prop="spectralId" label="ID" width="70"/>
             <el-table-column label="物质名称" min-width="120">
               <template #default="{ row }">
                 <div class="name-cell">
@@ -36,8 +36,8 @@
               </template>
             </el-table-column>
             <el-table-column label="波形预览" width="140" align="center">
-              <template #default="scope">
-                <div :id="'mini-chart-' + scope.$index" class="mini-chart-box"></div>
+              <template #default="{ row }">
+                <div :id="'mini-chart-' + getRowIndex(row)" class="mini-chart-box"></div>
               </template>
             </el-table-column>
           </el-table>
@@ -48,12 +48,12 @@
         <div v-if="selectedItem" class="detail-dashboard">
           <el-card class="info-card mb-20" shadow="hover">
             <el-descriptions :title="selectedItem.name + ' - 光谱特征详情'" :column="3" border>
-              <el-descriptions-item label="入库ID">{{ selectedItem.id }}</el-descriptions-item>
+              <el-descriptions-item label="入库ID">{{ selectedItem.spectralId || selectedItem.id }}</el-descriptions-item>
               <el-descriptions-item label="采样环境">
-                <el-tag size="small">自然光 11:00 AM</el-tag>
+                <el-tag size="small">{{ selectedItem.sampleEnvironment || '自然光 11:00 AM' }}</el-tag>
               </el-descriptions-item>
               <el-descriptions-item label="更新时间">{{ selectedItem.updateTime }}</el-descriptions-item>
-              <el-descriptions-item label="光谱熵">0.864</el-descriptions-item>
+              <el-descriptions-item label="光谱熵">{{ selectedItem.spectralEntropy || '0.864' }}</el-descriptions-item>
               <el-descriptions-item label="主要波峰">{{ selectedItem.peak }} nm</el-descriptions-item>
               <el-descriptions-item label="操作">
                 <el-button type="primary" link icon="Download">导出CSV</el-button>
@@ -99,85 +99,13 @@
 </template>
 
 <script setup>
-import {ref, onMounted, nextTick, watch} from 'vue';
+import {ref, onMounted, nextTick, onUnmounted, computed, watch} from 'vue';
 import {Collection, Search, TrendCharts, Plus} from '@element-plus/icons-vue';
 import * as echarts from 'echarts';
+import {getAllSpectra} from '@/api/spectral';
+import {ElMessage} from 'element-plus';
 
-// --- 模拟数据生成器 ---
-// 模拟不同物质的光谱曲线趋势
-const generateCurve = (type) => {
-  const data = [];
-  for (let i = 0; i < 200; i++) {
-    let val = 0;
-    // 模拟植被：红边效应（在波段50-80左右陡峭上升）
-    if (type === 'veg') {
-      if (i < 50) val = 0.05 + Math.random() * 0.02;
-      else if (i < 80) val = 0.05 + (i - 50) * 0.015;
-      else val = 0.5 + Math.random() * 0.05 - (i - 80) * 0.001;
-    }
-    // 模拟金属：整体较低且平坦，缓慢上升
-    else if (type === 'metal') {
-      val = 0.15 + (i * 0.001) + Math.random() * 0.03;
-    }
-    // 模拟伪装网：模仿植被但有差异
-    else if (type === 'net') {
-      if (i < 50) val = 0.08 + Math.random() * 0.02;
-      else if (i < 80) val = 0.08 + (i - 50) * 0.01;
-      else val = 0.35 + Math.sin(i / 20) * 0.05;
-    }
-    data.push(val.toFixed(4));
-  }
-  return data;
-};
-
-const libData = ref([
-  {
-    id: 'S001',
-    name: '绿色植被 (草地)',
-    category: '自然背景',
-    typeTag: 'success',
-    updateTime: '2026-02-05',
-    peak: '780',
-    data: generateCurve('veg')
-  },
-  {
-    id: 'S002',
-    name: '金属板 (涂层)',
-    category: '人造目标',
-    typeTag: 'danger',
-    updateTime: '2026-02-06',
-    peak: 'N/A',
-    data: generateCurve('metal')
-  },
-  {
-    id: 'S003',
-    name: '伪装网 (丛林)',
-    category: '干扰物',
-    typeTag: 'warning',
-    updateTime: '2026-02-04',
-    peak: '650',
-    data: generateCurve('net')
-  },
-  {
-    id: 'S004',
-    name: '枯黄落叶',
-    category: '自然背景',
-    typeTag: 'info',
-    updateTime: '2026-02-01',
-    peak: '600',
-    data: generateCurve('veg').map(v => v * 0.8)
-  }, // 变种
-  {
-    id: 'S005',
-    name: '混凝土路面',
-    category: '人造目标',
-    typeTag: 'info',
-    updateTime: '2026-01-20',
-    peak: 'N/A',
-    data: generateCurve('metal').map(v => v * 1.5)
-  },
-]);
-
+const libData = ref([]);
 const searchQuery = ref('');
 const selectedItem = ref(null);
 const chartMode = ref('raw');
@@ -185,13 +113,136 @@ let mainChartInstance = null;
 let radarChartInstance = null;
 let barChartInstance = null;
 
+const loadSpectralData = async () => {
+  try {
+    const res = await getAllSpectra();
+    if (res.data) {
+      libData.value = res.data.map(item => ({
+        ...item,
+        data: typeof item.spectralData === 'string' ? JSON.parse(item.spectralData) : item.spectralData
+      }));
+    }
+    initMiniCharts();
+    if (libData.value.length > 0) {
+      handleRowClick(libData.value[0]);
+    }
+  } catch (error) {
+    console.error('加载光谱库失败:', error);
+    ElMessage.error('加载光谱库失败');
+    loadFallbackData();
+  }
+};
+
+const loadFallbackData = () => {
+  const generateCurve = (type) => {
+    const data = [];
+    for (let i = 0; i < 200; i++) {
+      let val = 0;
+      if (type === 'veg') {
+        if (i < 50) val = 0.05 + Math.random() * 0.02;
+        else if (i < 80) val = 0.05 + (i - 50) * 0.015;
+        else val = 0.5 + Math.random() * 0.05 - (i - 80) * 0.001;
+      } else if (type === 'metal') {
+        val = 0.15 + (i * 0.001) + Math.random() * 0.03;
+      } else if (type === 'net') {
+        if (i < 50) val = 0.08 + Math.random() * 0.02;
+        else if (i < 80) val = 0.08 + (i - 50) * 0.01;
+        else val = 0.35 + Math.sin(i / 20) * 0.05;
+      }
+      data.push(val.toFixed(4));
+    }
+    return data;
+  };
+
+  libData.value = [
+    {
+      id: 'S001',
+      spectralId: 'S001',
+      name: '绿色植被 (草地)',
+      category: '自然背景',
+      typeTag: 'success',
+      updateTime: '2026-02-05',
+      peak: '780',
+      sampleEnvironment: '自然光 11:00 AM',
+      spectralEntropy: 0.864,
+      data: generateCurve('veg')
+    },
+    {
+      id: 'S002',
+      spectralId: 'S002',
+      name: '金属板 (涂层)',
+      category: '人造目标',
+      typeTag: 'danger',
+      updateTime: '2026-02-06',
+      peak: 'N/A',
+      sampleEnvironment: '自然光 11:00 AM',
+      spectralEntropy: 0.864,
+      data: generateCurve('metal')
+    },
+    {
+      id: 'S003',
+      spectralId: 'S003',
+      name: '伪装网 (丛林)',
+      category: '干扰物',
+      typeTag: 'warning',
+      updateTime: '2026-02-04',
+      peak: '650',
+      sampleEnvironment: '自然光 11:00 AM',
+      spectralEntropy: 0.864,
+      data: generateCurve('net')
+    },
+    {
+      id: 'S004',
+      spectralId: 'S004',
+      name: '枯黄落叶',
+      category: '自然背景',
+      typeTag: 'info',
+      updateTime: '2026-02-01',
+      peak: '600',
+      sampleEnvironment: '自然光 11:00 AM',
+      spectralEntropy: 0.864,
+      data: generateCurve('veg').map(v => v * 0.8)
+    },
+    {
+      id: 'S005',
+      spectralId: 'S005',
+      name: '混凝土路面',
+      category: '人造目标',
+      typeTag: 'info',
+      updateTime: '2026-01-20',
+      peak: 'N/A',
+      sampleEnvironment: '自然光 11:00 AM',
+      spectralEntropy: 0.864,
+      data: generateCurve('metal').map(v => v * 1.5)
+    },
+  ];
+  initMiniCharts();
+  if (libData.value.length > 0) {
+    handleRowClick(libData.value[0]);
+  }
+};
+
+const filteredData = computed(() => {
+  if (!searchQuery.value) return libData.value;
+  const query = searchQuery.value.toLowerCase();
+  return libData.value.filter(item =>
+    item.name?.toLowerCase().includes(query) ||
+    item.spectralId?.toLowerCase().includes(query) ||
+    item.id?.toString().includes(query) ||
+    item.category?.toLowerCase().includes(query)
+  );
+});
+
+const getRowIndex = (row) => {
+  return libData.value.findIndex(item => item.id === row.id || item.spectralId === row.spectralId);
+};
+
 // 初始化微缩图 (Sparklines)
 const initMiniCharts = () => {
   nextTick(() => {
-    libData.value.forEach((item, index) => {
-      const dom = document.getElementById(`mini-chart-${index}`);
+    filteredData.value.forEach((item, index) => {
+      const dom = document.getElementById(`mini-chart-${getRowIndex(item)}`);
       if (dom) {
-        // 防止重复初始化
         const existChart = echarts.getInstanceByDom(dom);
         if (existChart) existChart.dispose();
 
@@ -201,7 +252,7 @@ const initMiniCharts = () => {
           xAxis: {type: 'category', show: false},
           yAxis: {type: 'value', show: false, min: 0, max: 1},
           series: [{
-            data: item.data, // 只取前20个点做缩略? 不，取采样
+            data: item.data,
             type: 'line',
             showSymbol: false,
             lineStyle: {width: 1.5, color: '#409EFF'},
@@ -333,17 +384,24 @@ const updateMainChart = () => {
 };
 
 onMounted(() => {
-  initMiniCharts();
-  // 默认选中第一行
-  if (libData.value.length > 0) {
-    handleRowClick(libData.value[0]);
-  }
+  loadSpectralData();
 
   window.addEventListener('resize', () => {
     mainChartInstance?.resize();
     radarChartInstance?.resize();
     barChartInstance?.resize();
-    // 列表里的微缩图也应该 resize，但出于性能通常只重绘可见的
+  });
+});
+
+onUnmounted(() => {
+  mainChartInstance?.dispose();
+  radarChartInstance?.dispose();
+  barChartInstance?.dispose();
+});
+
+watch(searchQuery, () => {
+  nextTick(() => {
+    initMiniCharts();
   });
 });
 </script>

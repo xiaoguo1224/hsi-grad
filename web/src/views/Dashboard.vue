@@ -3,7 +3,7 @@
     <el-row :gutter="20">
       <el-col :span="6" v-for="item in stats" :key="item.title">
         <el-card shadow="hover" class="stat-card">
-          <el-statistic :title="item.title" :value="item.value" :precision="item.precision">
+          <el-statistic :title="item.title" :value="item.value" :precision="item.precision || 0">
             <template #suffix>
               <span :style="{ color: item.color }">{{ item.suffix }}</span>
             </template>
@@ -86,35 +86,140 @@
 <script setup>
 import {ref, onMounted, reactive} from 'vue';
 import * as echarts from 'echarts';
+import {getDashboardOverview, getSystemResources} from '@/api/dashboard';
+import {ElMessage} from 'element-plus';
 
-// 核心业务指标 (基于任务书要求)
-const stats = [
-  {title: 'HSOD-BIT 数据集立方体', value: 319, suffix: 'Cubes', color: '#409EFF'},
-  {title: 'ACEN 验证集 mAP@0.5', value: 78.5, precision: 1, suffix: '%', color: '#67C23A'},
-  {title: 'F1-Score 目标识别率', value: 0.72, precision: 2, suffix: '', color: '#E6A23C'},
-  {title: '单幅平均响应时间', value: 2.8, precision: 1, suffix: 's', color: '#F56C6C'}
-];
+// 核心业务指标
+const stats = ref([
+  {title: 'HSOD-BIT 数据集立方体', value: 0, suffix: 'Cubes', color: '#409EFF', precision: 0},
+  {title: 'ACEN 验证集 mAP@0.5', value: 0, precision: 1, suffix: '%', color: '#67C23A'},
+  {title: 'F1-Score 目标识别率', value: 0, precision: 2, suffix: '', color: '#E6A23C'},
+  {title: '单幅平均响应时间', value: 0, precision: 1, suffix: 's', color: '#F56C6C'}
+]);
 
 // 服务器资源实时数据
 const resources = reactive({
-  gpuUsage: 45,
-  vram: '5.4GB',
-  ramUsage: 32,
-  ram: '10.2GB',
-  latency: 12
+  gpuUsage: 0,
+  vram: '0GB',
+  ramUsage: 0,
+  ram: '0GB',
+  latency: 0
 });
 
-// 模拟任务队列
-const taskQueue = [
-  {id: 'T2026020501', name: 'lake_scene_001.mat', progress: 100, status: '完成'},
-  {id: 'T2026020502', name: 'industrial_bg_04.mat', progress: 45, status: '推理中'},
-  {id: 'T2026020503', name: 'urban_exposure_12.mat', progress: 0, status: '排队中'}
-];
+// 任务队列
+const taskQueue = ref([]);
 
 const perfChart = ref(null);
+let myChart = null;
+let resourceTimer = null;
+
+// 加载Dashboard数据
+const loadDashboardData = async () => {
+  try {
+    const res = await getDashboardOverview();
+    if (res.data) {
+      const {stats: statsData, resources: resourcesData, performance: perfData, tasks} = res.data;
+
+      // 更新统计数据
+      if (statsData) {
+        stats.value[0].value = statsData.totalCubes || 0;
+        stats.value[1].value = statsData.mapAt05 || 0;
+        stats.value[2].value = statsData.f1Score || 0;
+        stats.value[3].value = statsData.avgResponseTime || 0;
+      }
+
+      // 更新资源数据
+      if (resourcesData) {
+        resources.gpuUsage = resourcesData.gpuUsage || 0;
+        resources.vram = resourcesData.vram || '0GB';
+        resources.ramUsage = resourcesData.ramUsage || 0;
+        resources.ram = resourcesData.ram || '0GB';
+        resources.latency = resourcesData.latency || 0;
+      }
+
+      // 更新性能图表
+      if (perfData && myChart) {
+        myChart.setOption({
+          xAxis: {type: 'category', data: perfData.algorithms || []},
+          series: [
+            {name: 'mAP@0.5', type: 'bar', data: perfData.mapValues || [], color: '#67C23A'},
+            {name: '推理延迟(s)', type: 'line', yAxisIndex: 1, data: perfData.latencyValues || [], color: '#F56C6C'}
+          ]
+        });
+      }
+
+      // 更新任务队列
+      if (tasks && Array.isArray(tasks)) {
+        taskQueue.value = tasks.map(task => {
+          let status = '排队中';
+          let progress = 0;
+          if (task.status === 2) {
+            status = '完成';
+            progress = 100;
+          } else if (task.status === 1) {
+            status = '推理中';
+            progress = 50;
+          }
+          return {
+            id: task.taskId ? 'T' + task.taskId : 'T--',
+            name: task.matFile?.fileName || task.taskName || '未知文件',
+            progress: progress,
+            status: status
+          };
+        });
+      }
+    }
+  } catch (error) {
+    console.error('加载Dashboard数据失败:', error);
+    ElMessage.warning('使用本地模拟数据');
+    loadFallbackData();
+  }
+};
+
+// 加载后备模拟数据
+const loadFallbackData = () => {
+  stats.value = [
+    {title: 'HSOD-BIT 数据集立方体', value: 319, suffix: 'Cubes', color: '#409EFF', precision: 0},
+    {title: 'ACEN 验证集 mAP@0.5', value: 78.5, precision: 1, suffix: '%', color: '#67C23A'},
+    {title: 'F1-Score 目标识别率', value: 0.72, precision: 2, suffix: '', color: '#E6A23C'},
+    {title: '单幅平均响应时间', value: 2.8, precision: 1, suffix: 's', color: '#F56C6C'}
+  ];
+
+  Object.assign(resources, {
+    gpuUsage: 45,
+    vram: '5.4GB',
+    ramUsage: 32,
+    ram: '10.2GB',
+    latency: 12
+  });
+
+  taskQueue.value = [
+    {id: 'T2026020501', name: 'lake_scene_001.mat', progress: 100, status: '完成'},
+    {id: 'T2026020502', name: 'industrial_bg_04.mat', progress: 45, status: '推理中'},
+    {id: 'T2026020503', name: 'urban_exposure_12.mat', progress: 0, status: '排队中'}
+  ];
+};
+
+// 定时刷新资源数据
+const refreshResources = async () => {
+  try {
+    const res = await getSystemResources();
+    if (res.data) {
+      resources.gpuUsage = res.data.gpuUsage;
+      resources.vram = res.data.vram;
+      resources.ramUsage = res.data.ramUsage;
+      resources.ram = res.data.ram;
+      resources.latency = res.data.latency;
+    }
+  } catch (error) {
+    resources.gpuUsage = Math.floor(Math.random() * 20) + 40;
+    resources.latency = Math.floor(Math.random() * 5) + 10;
+  }
+};
 
 onMounted(() => {
-  const myChart = echarts.init(perfChart.value);
+  // 初始化图表
+  myChart = echarts.init(perfChart.value);
   myChart.setOption({
     tooltip: {trigger: 'axis'},
     legend: {data: ['mAP@0.5', '推理延迟(s)']},
@@ -129,11 +234,22 @@ onMounted(() => {
     ]
   });
 
-  // 模拟资源动态变化
-  setInterval(() => {
-    resources.gpuUsage = Math.floor(Math.random() * 20) + 40;
-    resources.latency = Math.floor(Math.random() * 5) + 10;
-  }, 3000);
+  // 加载数据
+  loadDashboardData();
+
+  // 定时刷新资源（每3秒）
+  resourceTimer = setInterval(refreshResources, 3000);
+});
+
+// 清理定时器
+import {onUnmounted} from 'vue';
+onUnmounted(() => {
+  if (resourceTimer) {
+    clearInterval(resourceTimer);
+  }
+  if (myChart) {
+    myChart.dispose();
+  }
 });
 </script>
 

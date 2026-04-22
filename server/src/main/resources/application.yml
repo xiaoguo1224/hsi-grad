@@ -17,7 +17,7 @@ predict:
 
 mybatis-plus:
   mapper-locations: classpath*:mapper/**/*Mapper.xml
-  type-aliases-package: com.ruoyi.**.domain
+  type-aliases-package: org.example.server.domain
   global-config:
     db-config:
       id-type: auto
